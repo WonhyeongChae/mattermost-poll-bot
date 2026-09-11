@@ -27,3 +27,11 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+      - name: Verify database migration
+        env:
+          DATABASE_URL: sqlite:///./migration_test.db
+        run: alembic upgrade head
+
+      - name: Build Docker image
+        run: docker build --tag mattermost-poll-bot:test .
