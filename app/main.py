@@ -1,14 +1,18 @@
+import logging
 import secrets
 from contextlib import asynccontextmanager
+from time import perf_counter
+from uuid import uuid4
 
 import httpx
-from fastapi import Depends, FastAPI, Form, HTTPException
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.database import Base, engine, get_db
 from app.domain import PollInputError, build_poll_props, parse_poll_text
+from app.logging_config import configure_logging
 from app.mattermost import MattermostClient
 from app.services import (
     InvalidPollActionError,
@@ -22,14 +26,50 @@ from app.services import (
     remove_poll,
 )
 
+configure_logging()
+logger = logging.getLogger("mattermost_poll_bot")
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    if get_settings().app_env != "production":
+        Base.metadata.create_all(bind=engine)
     yield
 
 
 app = FastAPI(title="Mattermost Poll Bot", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    request_id = request.headers.get("x-request-id", str(uuid4()))
+    started_at = perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "request_failed",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+            },
+        )
+        raise
+
+    duration_ms = round((perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "request_completed",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        },
+    )
+    response.headers["x-request-id"] = request_id
+    return response
 
 
 class ActionContext(BaseModel):
@@ -40,8 +80,8 @@ class ActionContext(BaseModel):
 
 class ActionRequest(BaseModel):
     user_id: str
-    post_id: str | None = None
-    channel_id: str | None = None
+    post_id: str
+    channel_id: str
     context: ActionContext
 
 
@@ -57,9 +97,7 @@ def _action_error(error: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=str(error))
     if isinstance(error, PollPermissionError):
         return HTTPException(status_code=403, detail=str(error))
-    if isinstance(error, (PollClosedError, InvalidPollActionError)):
-        return HTTPException(status_code=400, detail=str(error))
-    return HTTPException(status_code=500, detail="Unexpected poll error.")
+    return HTTPException(status_code=400, detail=str(error))
 
 
 @app.get("/health")
@@ -109,10 +147,7 @@ async def create_poll_command(
             detail="Mattermost에 투표 게시물을 생성하지 못했습니다.",
         ) from error
 
-    return {
-        "response_type": "ephemeral",
-        "text": "투표를 생성했습니다.",
-    }
+    return {"response_type": "ephemeral", "text": "투표를 생성했습니다."}
 
 
 @app.post("/mattermost/actions/vote")
@@ -130,15 +165,17 @@ def vote_action(
             poll_id=request.context.poll_id,
             option_id=request.context.option_id,
             user_id=request.user_id,
+            post_id=request.post_id,
+            channel_id=request.channel_id,
             action_token=request.context.action_token,
         )
-    except Exception as error:
-        if isinstance(
-            error,
-            (PollNotFoundError, PollPermissionError, PollClosedError, InvalidPollActionError),
-        ):
-            raise _action_error(error) from error
-        raise
+    except (
+        PollNotFoundError,
+        PollPermissionError,
+        PollClosedError,
+        InvalidPollActionError,
+    ) as error:
+        raise _action_error(error) from error
 
     return {
         "update": {
@@ -160,15 +197,17 @@ def close_action(
             db,
             poll_id=request.context.poll_id,
             user_id=request.user_id,
+            post_id=request.post_id,
+            channel_id=request.channel_id,
             action_token=request.context.action_token,
         )
-    except Exception as error:
-        if isinstance(
-            error,
-            (PollNotFoundError, PollPermissionError, PollClosedError, InvalidPollActionError),
-        ):
-            raise _action_error(error) from error
-        raise
+    except (
+        PollNotFoundError,
+        PollPermissionError,
+        PollClosedError,
+        InvalidPollActionError,
+    ) as error:
+        raise _action_error(error) from error
 
     return {
         "update": {

@@ -9,6 +9,8 @@ Mattermost 채널에서 슬래시 명령으로 투표를 만들고 대화형 버
 - 사용자당 한 표 및 선택 변경
 - 실시간 득표수 표시
 - 생성자 전용 투표 종료
+- 게시물·채널 정보가 일치하는 콜백만 처리
+- 동시 투표를 위한 데이터베이스 UPSERT
 - 채널별 복수 투표 지원
 - SQLite 개발 환경과 PostgreSQL 운영 환경 지원
 
@@ -27,6 +29,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
@@ -48,7 +51,7 @@ GET http://localhost:8000/health
 | `MATTERMOST_BOT_TOKEN` | 게시물 생성용 Bot 또는 Personal Access Token |
 | `MATTERMOST_COMMAND_TOKEN` | Slash Command 요청 검증 토큰 |
 
-비밀값은 `.env` 또는 배포 환경의 Secret으로만 관리합니다.
+비밀값은 `.env` 또는 배포 환경의 Secret으로만 관리합니다. 운영 서버는 시작 전에 `alembic upgrade head`를 실행해야 하며, 제공된 Dockerfile은 이를 자동 수행합니다.
 
 ## Mattermost 설정
 
@@ -79,4 +82,4 @@ python -m pytest -q
 
 ## 현재 단계
 
-초기 MVP 구현 완료. 실제 SSAFY Mattermost 연결과 운영 배포가 다음 단계입니다.
+초기 MVP와 운영 안전성 보강 완료. 실제 SSAFY Mattermost 권한 확인, PostgreSQL 배포, Slash Command 연결이 다음 단계입니다.
